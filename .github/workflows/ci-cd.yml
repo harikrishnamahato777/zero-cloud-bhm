@@ -1,4 +1,4 @@
-name: Zero-Cloud CI/CD — Browser History Manager
+name: Production CI/CD — Browser History Manager Web
 
 on:
   push:
@@ -6,78 +6,89 @@ on:
   pull_request:
     branches: [ main ]
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+permissions:
+  contents: read
 
 jobs:
-  build-and-test:
-    name: Maven Build & JUnit Tests
+  build-test-package:
+    name: Build, Test & Package
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
         with:
-          java-version: '17'
+          java-version: '21'
           distribution: 'temurin'
           cache: maven
 
-      - name: Compile with Maven
-        run: mvn compile -q
-
-      - name: Run JUnit tests
-        run: mvn test
-
-      - name: Package JAR
-        run: mvn package -DskipTests -q
+      - name: Build and test
+        run: mvn clean verify
 
       - name: Upload JAR artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
-          name: browser-history-manager-jar
-          path: target/browser-history-manager.jar
+          name: app-jar
+          path: target/*.jar
 
-  docker-build:
-    name: Docker Image Build
+  docker-build-test:
+    name: Docker Build & Smoke Test
     runs-on: ubuntu-latest
-    needs: build-and-test
+    needs: build-test-package
 
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Download JAR artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: app-jar
+          path: target
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build Docker image
-        run: |
-          docker build -t browser-history-manager:latest .
-          docker images browser-history-manager
+        run: docker build -t browser-history-manager-web:latest .
 
-      - name: Save Docker image as tar
-        run: docker save browser-history-manager:latest -o bhm-image.tar
+      - name: Run container
+        run: docker run -d --name bhm -p 8082:8082 browser-history-manager-web:latest
+
+      - name: Smoke test API
+        run: |
+          sleep 15
+          curl -f http://localhost:8082/api/history/all
+
+      - name: Save Docker image
+        run: docker save browser-history-manager-web:latest -o bhm-image.tar
 
       - name: Upload Docker image artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: bhm-docker-image
           path: bhm-image.tar
 
   deploy-kind:
-    name: Deploy to kind Cluster
+    name: Deploy to kind Kubernetes
     runs-on: ubuntu-latest
-    needs: docker-build
+    needs: docker-build-test
 
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v7
+        with:
+          name: bhm-docker-image
 
       - name: Install kind
         run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
 
@@ -90,30 +101,25 @@ jobs:
       - name: Create kind cluster
         run: kind create cluster --name bhm-cluster --wait 60s
 
-      - name: Download Docker image artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: bhm-docker-image
-
       - name: Load Docker image into kind
         run: |
           docker load -i bhm-image.tar
-          kind load docker-image browser-history-manager:latest --name bhm-cluster
+          kind load docker-image browser-history-manager-web:latest --name bhm-cluster
 
       - name: Apply Kubernetes manifests
-        run: |
-          kubectl apply -f k8s/deployment.yaml
-          kubectl apply -f k8s/service.yaml
+        run: kubectl apply -f k8s/
 
       - name: Wait for deployment
-        run: kubectl rollout status deployment/bhm-app --timeout=120s
+        run: kubectl rollout status deployment/bhm-app --timeout=180s
 
-      - name: Verify deployment
+      - name: Verify Kubernetes deployment
         run: |
           kubectl get pods -o wide
           kubectl get services
-          echo "Browser History Manager deployed to kind cluster!"
+          kubectl port-forward service/bhm-service 8082:80 &
+          sleep 10
+          curl -f http://localhost:8082/api/history/all
 
-      - name: Delete kind cluster
+      - name: Cleanup kind cluster
         if: always()
         run: kind delete cluster --name bhm-cluster
