@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bhm-app
+  labels:
+    app: browser-history-manager
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: browser-history-manager
+  template:
+    metadata:
+      labels:
+        app: browser-history-manager
+    spec:
+      containers:
+        - name: bhm
+          image: browser-history-manager:latest
+          imagePullPolicy: Never      # uses locally loaded image in kind
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "250m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
