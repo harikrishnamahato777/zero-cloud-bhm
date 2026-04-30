@@ -1,16 +1,15 @@
 name: Zero-Cloud CI/CD — Browser History Manager
 
-# Triggers on every push or PR to main
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
-  # ─────────────────────────────────────────────────────────────
-  # Job 1: Build → Test → Package
-  # ─────────────────────────────────────────────────────────────
   build-and-test:
     name: Maven Build & JUnit Tests
     runs-on: ubuntu-latest
@@ -19,20 +18,20 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17 (Temurin)
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: maven          # caches ~/.m2 between runs
+          cache: maven
 
       - name: Compile with Maven
         run: mvn compile -q
 
-      - name: Run JUnit 5 tests
+      - name: Run JUnit tests
         run: mvn test
 
-      - name: Package fat JAR
+      - name: Package JAR
         run: mvn package -DskipTests -q
 
       - name: Upload JAR artifact
@@ -41,13 +40,10 @@ jobs:
           name: browser-history-manager-jar
           path: target/browser-history-manager.jar
 
-  # ─────────────────────────────────────────────────────────────
-  # Job 2: Docker Build (runs after Job 1 passes)
-  # ─────────────────────────────────────────────────────────────
   docker-build:
     name: Docker Image Build
     runs-on: ubuntu-latest
-    needs: build-and-test      # only runs if tests pass
+    needs: build-and-test
 
     steps:
       - name: Checkout source code
@@ -70,13 +66,10 @@ jobs:
           name: bhm-docker-image
           path: bhm-image.tar
 
-  # ─────────────────────────────────────────────────────────────
-  # Job 3: Deploy to kind Kubernetes cluster
-  # ─────────────────────────────────────────────────────────────
   deploy-kind:
     name: Deploy to kind Cluster
     runs-on: ubuntu-latest
-    needs: docker-build        # only runs if Docker build passes
+    needs: docker-build
 
     steps:
       - name: Checkout source code
@@ -91,7 +84,8 @@ jobs:
       - name: Install kubectl
         run: |
           curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          chmod +x kubectl && sudo mv kubectl /usr/local/bin/kubectl
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/kubectl
 
       - name: Create kind cluster
         run: kind create cluster --name bhm-cluster --wait 60s
@@ -111,15 +105,15 @@ jobs:
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
 
-      - name: Wait for pods to be ready
+      - name: Wait for deployment
         run: kubectl rollout status deployment/bhm-app --timeout=120s
 
       - name: Verify deployment
         run: |
           kubectl get pods -o wide
           kubectl get services
-          echo "✅ Browser History Manager deployed to kind cluster!"
+          echo "Browser History Manager deployed to kind cluster!"
 
-      - name: Delete kind cluster (cleanup)
+      - name: Delete kind cluster
         if: always()
         run: kind delete cluster --name bhm-cluster
